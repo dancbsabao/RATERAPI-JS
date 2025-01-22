@@ -704,85 +704,88 @@ function updateDropdown(dropdown, options, defaultOptionText = 'Select') {
 
 
 async function submitRatings() {
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY = 1000; // 1 second
-  const LOCK_TIMEOUT = 30000; // 30 seconds
-  
-  const token = gapi.client.getToken();
-  if (!token) {
-      showToast('error', 'Error', 'Please sign in to submit ratings');
-      handleAuthClick();
-      return;
-  }
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 1000;
+    const LOCK_TIMEOUT = 30000;
+    
+    const token = gapi.client.getToken();
+    if (!token) {
+        showToast('error', 'Error', 'Please sign in to submit ratings');
+        handleAuthClick();
+        return;
+    }
 
-  if (!currentEvaluator) {
-      showToast('warning', 'Warning', 'Please select an evaluator and enter the correct password');
-      return;
-  }
+    if (!currentEvaluator) {
+        showToast('warning', 'Warning', 'Please select an evaluator and enter the correct password');
+        return;
+    }
 
-  const item = elements.itemDropdown.value;
-  const candidateName = elements.nameDropdown.value;
+    const item = elements.itemDropdown.value;
+    const candidateName = elements.nameDropdown.value;
 
-  if (!item || !candidateName) {
-      showToast('error', 'Error', 'Please select both item and candidate before submitting the ratings.');
-      return;
-  }
+    if (!item || !candidateName) {
+        showToast('error', 'Error', 'Please select both item and candidate before submitting the ratings.');
+        return;
+    }
 
-  // Validate and prepare ratings data
-  const { ratings, error } = prepareRatingsData();
-  if (error) {
-      showToast('error', 'Error', error);
-      return;
-  }
+    const { ratings, error } = prepareRatingsData(item, candidateName, currentEvaluator);
+    if (error) {
+        showToast('error', 'Error', error);
+        return;
+    }
 
-  // Implement retry logic
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-          const result = await submitRatingsWithLock(ratings);
-          if (result.success) {
-              showToast('success', 'Success', result.message);
-              return;
-          }
-          
-          if (attempt < MAX_RETRIES) {
-              await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-              continue;
-          }
-          
-          showToast('error', 'Error', 'Maximum retry attempts reached. Please try again later.');
-          return;
-      } catch (error) {
-          console.error(`Attempt ${attempt} failed:`, error);
-          if (attempt === MAX_RETRIES) {
-              showToast('error', 'Error', 'Failed to submit ratings after multiple attempts');
-              return;
-          }
-      }
-  }
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const result = await submitRatingsWithLock(ratings);
+            if (result.success) {
+                showToast('success', 'Success', result.message);
+                return;
+            }
+            
+            if (attempt < MAX_RETRIES) {
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+                continue;
+            }
+            
+            showToast('error', 'Error', 'Maximum retry attempts reached. Please try again later.');
+            return;
+        } catch (error) {
+            console.error(`Attempt ${attempt} failed:`, error);
+            if (attempt === MAX_RETRIES) {
+                showToast('error', 'Error', 'Failed to submit ratings after multiple attempts');
+                return;
+            }
+        }
+    }
 }
 
-function prepareRatingsData() {
-  const competencyItems = elements.competencyContainer.getElementsByClassName('competency-item');
-  const competencies = Array.from(competencyItems).map(item => item.querySelector('label').textContent.split('. ')[1]);
-  const ratings = [];
+function prepareRatingsData(item, candidateName, currentEvaluator) {
+    const competencyItems = elements.competencyContainer.getElementsByClassName('competency-item');
+    const competencies = Array.from(competencyItems).map(item => item.querySelector('label').textContent.split('. ')[1]);
+    const ratings = [];
 
-  for (let i = 0; i < competencyItems.length; i++) {
-      const competencyName = competencies[i];
-      const rating = Array.from(competencyItems[i].querySelectorAll('input[type="radio"]'))
-          .find(radio => radio.checked)?.value;
+    for (let i = 0; i < competencyItems.length; i++) {
+        const competencyName = competencies[i];
+        const rating = Array.from(competencyItems[i].querySelectorAll('input[type="radio"]'))
+            .find(radio => radio.checked)?.value;
 
-      if (!rating) {
-          return { error: 'Please rate all competencies before submitting.' };
-      }
+        if (!rating) {
+            return { error: 'Please rate all competencies before submitting.' };
+        }
 
-      const competencyCode = getCompetencyCode(competencyName);
-      const candidateInitials = getInitials(candidateName);
-      const ratingCode = `${item}-${candidateInitials}-${competencyCode}-${currentEvaluator}`;
-      ratings.push([ratingCode, item, candidateName, competencyName, rating, currentEvaluator]);
-  }
+        const competencyCode = getCompetencyCode(competencyName);
+        const candidateInitials = getInitials(candidateName);
+        const ratingCode = `${item}-${candidateInitials}-${competencyCode}-${currentEvaluator}`;
+        ratings.push([ratingCode, item, candidateName, competencyName, rating, currentEvaluator]);
+    }
 
-  return { ratings };
+    return { ratings };
 }
+
+// Rest of the code remains the same...
+
+
+
 
 async function submitRatingsWithLock(ratings) {
   const lockRange = "RATELOG!G1:H1";
