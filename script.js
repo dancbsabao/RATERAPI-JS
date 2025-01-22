@@ -702,8 +702,12 @@ function updateDropdown(dropdown, options, defaultOptionText = 'Select') {
 
 
 
-// Modify your existing submitRatings function to include evaluator check
+
 async function submitRatings() {
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 1000; // 1 second
+  const LOCK_TIMEOUT = 30000; // 30 seconds
+  
   const token = gapi.client.getToken();
   if (!token) {
       showToast('error', 'Error', 'Please sign in to submit ratings');
@@ -724,20 +728,43 @@ async function submitRatings() {
       return;
   }
 
+  // Validate and prepare ratings data
+  const { ratings, error } = prepareRatingsData();
+  if (error) {
+      showToast('error', 'Error', error);
+      return;
+  }
+
+  // Implement retry logic
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+          const result = await submitRatingsWithLock(ratings);
+          if (result.success) {
+              showToast('success', 'Success', result.message);
+              return;
+          }
+          
+          if (attempt < MAX_RETRIES) {
+              await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+              continue;
+          }
+          
+          showToast('error', 'Error', 'Maximum retry attempts reached. Please try again later.');
+          return;
+      } catch (error) {
+          console.error(`Attempt ${attempt} failed:`, error);
+          if (attempt === MAX_RETRIES) {
+              showToast('error', 'Error', 'Failed to submit ratings after multiple attempts');
+              return;
+          }
+      }
+  }
+}
+
+function prepareRatingsData() {
   const competencyItems = elements.competencyContainer.getElementsByClassName('competency-item');
-
-  function getInitials(name) {
-      return name.split(' ').map(word => word.slice(0, 3)).join('');
-  }
-
-  function getCompetencyCode(competencyName) {
-      return competencyName.split(' ').map(word => word.charAt(0).replace(/[^A-Za-z]/g, '')).join('');
-  }
-
-  const candidateInitials = getInitials(candidateName);
   const competencies = Array.from(competencyItems).map(item => item.querySelector('label').textContent.split('. ')[1]);
   const ratings = [];
-  let allRated = true;
 
   for (let i = 0; i < competencyItems.length; i++) {
       const competencyName = competencies[i];
@@ -745,103 +772,147 @@ async function submitRatings() {
           .find(radio => radio.checked)?.value;
 
       if (!rating) {
-          allRated = false;
-          break;
+          return { error: 'Please rate all competencies before submitting.' };
       }
 
       const competencyCode = getCompetencyCode(competencyName);
+      const candidateInitials = getInitials(candidateName);
       const ratingCode = `${item}-${candidateInitials}-${competencyCode}-${currentEvaluator}`;
       ratings.push([ratingCode, item, candidateName, competencyName, rating, currentEvaluator]);
   }
 
-  if (!allRated) {
-      showToast('error', 'Error', 'Please rate all competencies before submitting.');
-      return;
-  }
+  return { ratings };
+}
 
+async function submitRatingsWithLock(ratings) {
+  const lockRange = "RATELOG!G1:H1";
+  
   try {
-      // Check if the sheet is locked and set the lock status in one atomic operation
+      // Get current lock status
       const lockStatusResponse = await gapi.client.sheets.spreadsheets.values.get({
           spreadsheetId: SHEET_ID,
-          range: "RATELOG!G1", // Lock status cell
+          range: lockRange,
       });
 
-      const lockStatus = lockStatusResponse.result.values && lockStatusResponse.result.values[0] ? lockStatusResponse.result.values[0][0] : '';
-
-      // If the sheet is locked, return a warning
+      const lockData = lockStatusResponse.result.values?.[0] || ['', ''];
+      const [lockStatus, lockTimestamp] = lockData;
+      
+      // Check if lock is stale
       if (lockStatus === 'locked') {
-          showToast('warning', 'Warning', 'Another submission is in progress. Please wait.');
-          return;
+          const lockTime = new Date(lockTimestamp).getTime();
+          const now = new Date().getTime();
+          if (now - lockTime < LOCK_TIMEOUT) {
+              return { success: false, message: 'Another submission is in progress' };
+          }
       }
 
-      // Lock the sheet by setting RATELOG!G1 to 'locked' in an atomic operation
+      // Acquire lock with timestamp
+      const timestamp = new Date().toISOString();
       await gapi.client.sheets.spreadsheets.values.update({
           spreadsheetId: SHEET_ID,
-          range: "RATELOG!G1",
+          range: lockRange,
           valueInputOption: 'RAW',
           resource: {
-              values: [['locked']], // Lock status
+              values: [['locked', timestamp]],
           },
       });
 
-      // Proceed to submit ratings (checking if the ratings are new or updated)
-      const response = await gapi.client.sheets.spreadsheets.values.get({
+      // Double-check lock acquisition
+      const verifyLockResponse = await gapi.client.sheets.spreadsheets.values.get({
           spreadsheetId: SHEET_ID,
-          range: SHEET_RANGES.RATELOG,
+          range: lockRange,
       });
+      
+      const verifyLockData = verifyLockResponse.result.values?.[0] || ['', ''];
+      if (verifyLockData[0] !== 'locked' || verifyLockData[1] !== timestamp) {
+          return { success: false, message: 'Failed to acquire lock' };
+      }
 
-      const existingData = response.result.values || [];
-      const updatedRatings = [];
-      const newRatings = [];
-      let isUpdated = false;
-
-      ratings.forEach(newRating => {
-          const existingRowIndex = existingData.findIndex(row => row[0] === newRating[0]);
-          if (existingRowIndex !== -1) {
-              existingData[existingRowIndex] = newRating;
-              isUpdated = true;
-          } else {
-              newRatings.push(newRating);
-          }
-      });
-
-      // Update the existing ratings
-      if (isUpdated) {
+      try {
+          // Process ratings
+          const result = await processRatings(ratings);
+          return result;
+      } finally {
+          // Release lock
           await gapi.client.sheets.spreadsheets.values.update({
+              spreadsheetId: SHEET_ID,
+              range: lockRange,
+              valueInputOption: 'RAW',
+              resource: {
+                  values: [['', '']], // Clear lock and timestamp
+              },
+          });
+      }
+  } catch (error) {
+      console.error('Error in submitRatingsWithLock:', error);
+      throw error;
+  }
+}
+
+async function processRatings(ratings) {
+  // Get existing ratings
+  const response = await gapi.client.sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: SHEET_RANGES.RATELOG,
+  });
+
+  const existingData = response.result.values || [];
+  const updatedRatings = [];
+  const newRatings = [];
+  let isUpdated = false;
+
+  // Process each rating
+  ratings.forEach(newRating => {
+      const existingRowIndex = existingData.findIndex(row => row[0] === newRating[0]);
+      if (existingRowIndex !== -1) {
+          existingData[existingRowIndex] = newRating;
+          isUpdated = true;
+      } else {
+          newRatings.push(newRating);
+      }
+  });
+
+  // Batch update operations
+  const batchUpdates = [];
+  
+  if (isUpdated) {
+      batchUpdates.push(
+          gapi.client.sheets.spreadsheets.values.update({
               spreadsheetId: SHEET_ID,
               range: SHEET_RANGES.RATELOG,
               valueInputOption: 'RAW',
               resource: { values: existingData },
-          });
-      }
+          })
+      );
+  }
 
-      // Append the new ratings
-      if (newRatings.length > 0) {
-          await gapi.client.sheets.spreadsheets.values.append({
+  if (newRatings.length > 0) {
+      batchUpdates.push(
+          gapi.client.sheets.spreadsheets.values.append({
               spreadsheetId: SHEET_ID,
               range: SHEET_RANGES.RATELOG,
               valueInputOption: 'RAW',
               resource: { values: newRatings },
-          });
-      }
-
-      // Release the lock by clearing RATELOG!G1 after successful submission
-      await gapi.client.sheets.spreadsheets.values.update({
-          spreadsheetId: SHEET_ID,
-          range: "RATELOG!G1",
-          valueInputOption: 'RAW',
-          resource: {
-              values: [['']], // Clear lock status to release the lock
-          },
-      });
-
-      showToast('success', 'Success', isUpdated ? 'Ratings updated successfully' : 'Ratings submitted successfully');
-  } catch (error) {
-      console.error('Error submitting ratings:', error);
-      showToast('error', 'Error', 'Error submitting ratings');
+          })
+      );
   }
+
+  // Execute all updates
+  await Promise.all(batchUpdates);
+
+  return {
+      success: true,
+      message: isUpdated ? 'Ratings updated successfully' : 'Ratings submitted successfully'
+  };
 }
 
+function getInitials(name) {
+    return name.split(' ').map(word => word.slice(0, 3)).join('');
+}
+
+function getCompetencyCode(competencyName) {
+    return competencyName.split(' ').map(word => word.charAt(0).replace(/[^A-Za-z]/g, '')).join('');
+}
 
 
 
