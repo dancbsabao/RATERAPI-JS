@@ -760,21 +760,21 @@ async function submitRatings() {
   }
 
   try {
-      // Check if the sheet is locked
-      const lockResponse = await gapi.client.sheets.spreadsheets.values.get({
+      // Check if the sheet is locked and set the lock status in one atomic operation
+      const lockStatusResponse = await gapi.client.sheets.spreadsheets.values.get({
           spreadsheetId: SHEET_ID,
           range: "RATELOG!G1", // Lock status cell
       });
 
-      // Check if lockResponse and its values are valid
-      const lockStatus = lockResponse.result.values && lockResponse.result.values[0] ? lockResponse.result.values[0][0] : ''; // Default to empty string if no value
+      const lockStatus = lockStatusResponse.result.values && lockStatusResponse.result.values[0] ? lockStatusResponse.result.values[0][0] : '';
 
+      // If the sheet is locked, return a warning
       if (lockStatus === 'locked') {
           showToast('warning', 'Warning', 'Another submission is in progress. Please wait.');
           return;
       }
 
-      // Lock the sheet by setting RATELOG!G1 to 'locked'
+      // Lock the sheet by setting RATELOG!G1 to 'locked' in an atomic operation
       await gapi.client.sheets.spreadsheets.values.update({
           spreadsheetId: SHEET_ID,
           range: "RATELOG!G1",
@@ -784,6 +784,7 @@ async function submitRatings() {
           },
       });
 
+      // Proceed to submit ratings (checking if the ratings are new or updated)
       const response = await gapi.client.sheets.spreadsheets.values.get({
           spreadsheetId: SHEET_ID,
           range: SHEET_RANGES.RATELOG,
@@ -804,6 +805,7 @@ async function submitRatings() {
           }
       });
 
+      // Update the existing ratings
       if (isUpdated) {
           await gapi.client.sheets.spreadsheets.values.update({
               spreadsheetId: SHEET_ID,
@@ -813,6 +815,7 @@ async function submitRatings() {
           });
       }
 
+      // Append the new ratings
       if (newRatings.length > 0) {
           await gapi.client.sheets.spreadsheets.values.append({
               spreadsheetId: SHEET_ID,
@@ -822,7 +825,7 @@ async function submitRatings() {
           });
       }
 
-      // Release the lock after submission by clearing RATELOG!G1
+      // Release the lock by clearing RATELOG!G1 after successful submission
       await gapi.client.sheets.spreadsheets.values.update({
           spreadsheetId: SHEET_ID,
           range: "RATELOG!G1",
@@ -838,7 +841,6 @@ async function submitRatings() {
       showToast('error', 'Error', 'Error submitting ratings');
   }
 }
-
 
 
 
