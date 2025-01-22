@@ -760,6 +760,30 @@ async function submitRatings() {
   }
 
   try {
+      // Check if the sheet is locked
+      const lockResponse = await gapi.client.sheets.spreadsheets.values.get({
+          spreadsheetId: SHEET_ID,
+          range: "RATELOG!G1", // Lock status cell
+      });
+
+      // Check if lockResponse and its values are valid
+      const lockStatus = lockResponse.result.values && lockResponse.result.values[0] ? lockResponse.result.values[0][0] : ''; // Default to empty string if no value
+
+      if (lockStatus === 'locked') {
+          showToast('warning', 'Warning', 'Another submission is in progress. Please wait.');
+          return;
+      }
+
+      // Lock the sheet by setting RATELOG!G1 to 'locked'
+      await gapi.client.sheets.spreadsheets.values.update({
+          spreadsheetId: SHEET_ID,
+          range: "RATELOG!G1",
+          valueInputOption: 'RAW',
+          resource: {
+              values: [['locked']], // Lock status
+          },
+      });
+
       const response = await gapi.client.sheets.spreadsheets.values.get({
           spreadsheetId: SHEET_ID,
           range: SHEET_RANGES.RATELOG,
@@ -798,12 +822,39 @@ async function submitRatings() {
           });
       }
 
+      // Release the lock after submission by clearing RATELOG!G1
+      await gapi.client.sheets.spreadsheets.values.update({
+          spreadsheetId: SHEET_ID,
+          range: "RATELOG!G1",
+          valueInputOption: 'RAW',
+          resource: {
+              values: [['']], // Clear lock status to release the lock
+          },
+      });
+
       showToast('success', 'Success', isUpdated ? 'Ratings updated successfully' : 'Ratings submitted successfully');
   } catch (error) {
       console.error('Error submitting ratings:', error);
       showToast('error', 'Error', 'Error submitting ratings');
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // Add this to your existing handleAuthClick callback
 function onSignInSuccess() {
