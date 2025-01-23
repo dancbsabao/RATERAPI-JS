@@ -530,7 +530,7 @@ async function fetchCompetenciesFromSheet() {
 
 
 
-// Submit ratings (unchanged logic)
+
 
 // Add this function to create and append evaluator selector
 document.addEventListener('DOMContentLoaded', () => {
@@ -698,228 +698,436 @@ function updateDropdown(dropdown, options, defaultOptionText = 'Select') {
 
 
 
+//SUBMIT RATINGS START
 
 
 
-
-
+// Modify your existing submitRatings function to include evaluator check
 async function submitRatings() {
-    const MAX_RETRIES = 3;
-    const RETRY_DELAY = 1000;
-    const LOCK_TIMEOUT = 30000;
-    
-    const token = gapi.client.getToken();
-    if (!token) {
-        showToast('error', 'Error', 'Please sign in to submit ratings');
-        handleAuthClick();
-        return;
-    }
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 1000;
+  const LOCK_TIMEOUT = 30000;
+  
+  const token = gapi.client.getToken();
+  if (!token) {
+      showToast('error', 'Error', 'Please sign in to submit ratings');
+      handleAuthClick();
+      return;
+  }
 
-    if (!currentEvaluator) {
-        showToast('warning', 'Warning', 'Please select an evaluator and enter the correct password');
-        return;
-    }
+  if (!currentEvaluator) {
+      showToast('warning', 'Warning', 'Please select an evaluator and enter the correct password');
+      return;
+  }
 
-    const item = elements.itemDropdown.value;
-    const candidateName = elements.nameDropdown.value;
+  const item = elements.itemDropdown.value;
+  const candidateName = elements.nameDropdown.value;
 
-    if (!item || !candidateName) {
-        showToast('error', 'Error', 'Please select both item and candidate before submitting the ratings.');
-        return;
-    }
+  if (!item || !candidateName) {
+      showToast('error', 'Error', 'Please select both item and candidate before submitting the ratings.');
+      return;
+  }
 
-    const { ratings, error } = prepareRatingsData(item, candidateName, currentEvaluator);
-    if (error) {
-        showToast('error', 'Error', error);
-        return;
-    }
+  // Check if there are existing ratings
+  const existingRatings = await checkExistingRatings(item, candidateName, currentEvaluator);
+  const isUpdate = existingRatings.length > 0;
 
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        try {
-            const result = await submitRatingsWithLock(ratings);
-            if (result.success) {
-                showToast('success', 'Success', result.message);
-                return;
-            }
-            
-            if (attempt < MAX_RETRIES) {
-                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-                continue;
-            }
-            
-            showToast('error', 'Error', 'Maximum retry attempts reached. Please try again later.');
-            return;
-        } catch (error) {
-            console.error(`Attempt ${attempt} failed:`, error);
-            if (attempt === MAX_RETRIES) {
-                showToast('error', 'Error', 'Failed to submit ratings after multiple attempts');
-                return;
-            }
-        }
-    }
+  if (isUpdate) {
+      // Store current selections before password verification
+      const currentSelections = storeCurrentSelections();
+      
+      // Verify password before proceeding with update
+      const isPasswordVerified = await verifyEvaluatorPassword();
+      
+      if (!isPasswordVerified) {
+          // Revert to existing ratings if password verification was canceled or failed
+          revertToExistingRatings(existingRatings);
+          showToast('warning', 'Update Canceled', 'Ratings have been reverted to their previous state');
+          return;
+      }
+  }
+
+  const { ratings, error } = prepareRatingsData(item, candidateName, currentEvaluator);
+  if (error) {
+      showToast('error', 'Error', error);
+      return;
+  }
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+          const result = await submitRatingsWithLock(ratings);
+          if (result.success) {
+              showToast('success', 'Success', result.message);
+              return;
+          }
+          
+          if (attempt < MAX_RETRIES) {
+              await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+              continue;
+          }
+          
+          showToast('error', 'Error', 'Maximum retry attempts reached. Please try again later.');
+          return;
+      } catch (error) {
+          console.error(`Attempt ${attempt} failed:`, error);
+          if (attempt === MAX_RETRIES) {
+              showToast('error', 'Error', 'Failed to submit ratings after multiple attempts');
+              return;
+          }
+      }
+  }
+}
+
+async function checkExistingRatings(item, candidateName, evaluator) {
+  try {
+      const response = await gapi.client.sheets.spreadsheets.values.get({
+          spreadsheetId: SHEET_ID,
+          range: SHEET_RANGES.RATELOG,
+      });
+
+      const existingData = response.result.values || [];
+      const candidateInitials = getInitials(candidateName);
+      
+      return existingData.filter(row => 
+          row[0].startsWith(`${item}-${candidateInitials}`) && 
+          row[5] === evaluator
+      );
+  } catch (error) {
+      console.error('Error checking existing ratings:', error);
+      return [];
+  }
+}
+
+function storeCurrentSelections() {
+  const selections = [];
+  const competencyItems = elements.competencyContainer.getElementsByClassName('competency-item');
+  
+  Array.from(competencyItems).forEach(item => {
+      const competencyName = item.querySelector('label').textContent.split('. ')[1];
+      const selectedRating = Array.from(item.querySelectorAll('input[type="radio"]'))
+          .find(radio => radio.checked)?.value;
+          
+      selections.push({
+          competencyName,
+          rating: selectedRating
+      });
+  });
+  
+  return selections;
+}
+
+function revertToExistingRatings(existingRatings) {
+  const competencyItems = elements.competencyContainer.getElementsByClassName('competency-item');
+  
+  Array.from(competencyItems).forEach((item, index) => {
+      const competencyName = item.querySelector('label').textContent.split('. ')[1];
+      const existingRating = existingRatings.find(row => row[3] === competencyName);
+      
+      if (existingRating) {
+          const ratingValue = existingRating[4];
+          const radioButton = item.querySelector(`input[type="radio"][value="${ratingValue}"]`);
+          if (radioButton) {
+              radioButton.checked = true;
+          }
+      }
+  });
+}
+
+async function verifyEvaluatorPassword() {
+  // Create and show the password verification modal
+  return new Promise((resolve) => {
+      const modal = document.createElement('div');
+      modal.className = 'modal';
+      modal.innerHTML = `
+          <div class="modal-content">
+              <h2>Password Verification Required</h2>
+              <p>You are attempting to update existing ratings for ${currentEvaluator}. Please verify your password to continue.</p>
+              <input type="password" id="verificationPassword" class="password-input" placeholder="Enter your password">
+              <div class="modal-buttons">
+                  <button id="cancelVerification" class="cancel-button">Cancel</button>
+                  <button id="confirmVerification" class="confirm-button">Verify & Update</button>
+              </div>
+          </div>
+      `;
+
+      document.body.appendChild(modal);
+
+      // Add modal styles if not already present
+      if (!document.getElementById('modalStyles')) {
+          const style = document.createElement('style');
+          style.id = 'modalStyles';
+          style.textContent = `
+              .modal {
+                  position: fixed;
+                  top: 0;
+                  left: 0;
+                  width: 100%;
+                  height: 100%;
+                  background-color: rgba(0, 0, 0, 0.5);
+                  display: flex;
+                  justify-content: center;
+                  align-items: center;
+                  z-index: 1000;
+              }
+              .modal-content {
+                  background-color: white;
+                  padding: 20px;
+                  border-radius: 5px;
+                  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+                  max-width: 400px;
+                  width: 90%;
+              }
+              .modal-content h2 {
+                  margin-top: 0;
+                  color: #333;
+              }
+              .modal-content p {
+                  color: #666;
+                  margin-bottom: 15px;
+              }
+              .password-input {
+                  width: 100%;
+                  padding: 8px;
+                  margin: 10px 0;
+                  border: 1px solid #ddd;
+                  border-radius: 4px;
+              }
+              .modal-buttons {
+                  display: flex;
+                  justify-content: flex-end;
+                  gap: 10px;
+                  margin-top: 15px;
+              }
+              .cancel-button {
+                  padding: 8px 15px;
+                  background-color: #ddd;
+                  border: none;
+                  border-radius: 4px;
+                  cursor: pointer;
+              }
+              .cancel-button:hover {
+                  background-color: #ccc;
+              }
+              .confirm-button {
+                  padding: 8px 15px;
+                  background-color: #4CAF50;
+                  color: white;
+                  border: none;
+                  border-radius: 4px;
+                  cursor: pointer;
+              }
+              .confirm-button:hover {
+                  background-color: #45a049;
+              }
+              .password-input:focus {
+                  outline: none;
+                  border-color: #4CAF50;
+                  box-shadow: 0 0 5px rgba(76, 175, 80, 0.2);
+              }
+          `;
+          document.head.appendChild(style);
+      }
+
+      const verificationPassword = document.getElementById('verificationPassword');
+      const cancelBtn = document.getElementById('cancelVerification');
+      const confirmBtn = document.getElementById('confirmVerification');
+
+      cancelBtn.onclick = () => {
+          document.body.removeChild(modal);
+          resolve(false);
+      };
+
+      confirmBtn.onclick = () => {
+          const password = verificationPassword.value;
+          // Use the EVALUATOR_PASSWORDS constant for verification
+          const isCorrect = password === EVALUATOR_PASSWORDS[currentEvaluator];
+          
+          if (isCorrect) {
+              document.body.removeChild(modal);
+              resolve(true);
+          } else {
+              showToast('error', 'Error', 'Incorrect password');
+              verificationPassword.value = '';
+              verificationPassword.focus();
+          }
+      };
+
+      // Allow Enter key to submit
+      verificationPassword.onkeyup = (e) => {
+          if (e.key === 'Enter') {
+              confirmBtn.click();
+          }
+      };
+
+      // Focus the password input
+      verificationPassword.focus();
+
+      // Allow closing modal with Escape key
+      document.addEventListener('keydown', function escapeHandler(e) {
+          if (e.key === 'Escape') {
+              document.removeEventListener('keydown', escapeHandler);
+              cancelBtn.click();
+          }
+      });
+  });
 }
 
 function prepareRatingsData(item, candidateName, currentEvaluator) {
-    const competencyItems = elements.competencyContainer.getElementsByClassName('competency-item');
-    const competencies = Array.from(competencyItems).map(item => item.querySelector('label').textContent.split('. ')[1]);
-    const ratings = [];
+  const competencyItems = elements.competencyContainer.getElementsByClassName('competency-item');
+  const competencies = Array.from(competencyItems).map(item => item.querySelector('label').textContent.split('. ')[1]);
+  const ratings = [];
 
-    for (let i = 0; i < competencyItems.length; i++) {
-        const competencyName = competencies[i];
-        const rating = Array.from(competencyItems[i].querySelectorAll('input[type="radio"]'))
-            .find(radio => radio.checked)?.value;
+  for (let i = 0; i < competencyItems.length; i++) {
+      const competencyName = competencies[i];
+      const rating = Array.from(competencyItems[i].querySelectorAll('input[type="radio"]'))
+          .find(radio => radio.checked)?.value;
 
-        if (!rating) {
-            return { error: 'Please rate all competencies before submitting.' };
-        }
+      if (!rating) {
+          return { error: 'Please rate all competencies before submitting.' };
+      }
 
-        const competencyCode = getCompetencyCode(competencyName);
-        const candidateInitials = getInitials(candidateName);
-        const ratingCode = `${item}-${candidateInitials}-${competencyCode}-${currentEvaluator}`;
-        ratings.push([ratingCode, item, candidateName, competencyName, rating, currentEvaluator]);
-    }
+      const competencyCode = getCompetencyCode(competencyName);
+      const candidateInitials = getInitials(candidateName);
+      const ratingCode = `${item}-${candidateInitials}-${competencyCode}-${currentEvaluator}`;
+      ratings.push([ratingCode, item, candidateName, competencyName, rating, currentEvaluator]);
+  }
 
-    return { ratings };
+  return { ratings };
 }
 
-// Rest of the code remains the same...
-
-
-
-
 async function submitRatingsWithLock(ratings) {
-  const lockRange = "RATELOG!G1:H1";
-  
-  try {
-      // Get current lock status
-      const lockStatusResponse = await gapi.client.sheets.spreadsheets.values.get({
-          spreadsheetId: SHEET_ID,
-          range: lockRange,
-      });
+const lockRange = "RATELOG!G1:H1";
 
-      const lockData = lockStatusResponse.result.values?.[0] || ['', ''];
-      const [lockStatus, lockTimestamp] = lockData;
-      
-      // Check if lock is stale
-      if (lockStatus === 'locked') {
-          const lockTime = new Date(lockTimestamp).getTime();
-          const now = new Date().getTime();
-          if (now - lockTime < LOCK_TIMEOUT) {
-              return { success: false, message: 'Another submission is in progress' };
-          }
-      }
+try {
+    // Get current lock status
+    const lockStatusResponse = await gapi.client.sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: lockRange,
+    });
 
-      // Acquire lock with timestamp
-      const timestamp = new Date().toISOString();
-      await gapi.client.sheets.spreadsheets.values.update({
-          spreadsheetId: SHEET_ID,
-          range: lockRange,
-          valueInputOption: 'RAW',
-          resource: {
-              values: [['locked', timestamp]],
-          },
-      });
+    const lockData = lockStatusResponse.result.values?.[0] || ['', ''];
+    const [lockStatus, lockTimestamp] = lockData;
+    
+    // Check if lock is stale
+    if (lockStatus === 'locked') {
+        const lockTime = new Date(lockTimestamp).getTime();
+        const now = new Date().getTime();
+        if (now - lockTime < LOCK_TIMEOUT) {
+            return { success: false, message: 'Another submission is in progress' };
+        }
+    }
 
-      // Double-check lock acquisition
-      const verifyLockResponse = await gapi.client.sheets.spreadsheets.values.get({
-          spreadsheetId: SHEET_ID,
-          range: lockRange,
-      });
-      
-      const verifyLockData = verifyLockResponse.result.values?.[0] || ['', ''];
-      if (verifyLockData[0] !== 'locked' || verifyLockData[1] !== timestamp) {
-          return { success: false, message: 'Failed to acquire lock' };
-      }
+    // Acquire lock with timestamp
+    const timestamp = new Date().toISOString();
+    await gapi.client.sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: lockRange,
+        valueInputOption: 'RAW',
+        resource: {
+            values: [['locked', timestamp]],
+        },
+    });
 
-      try {
-          // Process ratings
-          const result = await processRatings(ratings);
-          return result;
-      } finally {
-          // Release lock
-          await gapi.client.sheets.spreadsheets.values.update({
-              spreadsheetId: SHEET_ID,
-              range: lockRange,
-              valueInputOption: 'RAW',
-              resource: {
-                  values: [['', '']], // Clear lock and timestamp
-              },
-          });
-      }
-  } catch (error) {
-      console.error('Error in submitRatingsWithLock:', error);
-      throw error;
-  }
+    // Double-check lock acquisition
+    const verifyLockResponse = await gapi.client.sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: lockRange,
+    });
+    
+    const verifyLockData = verifyLockResponse.result.values?.[0] || ['', ''];
+    if (verifyLockData[0] !== 'locked' || verifyLockData[1] !== timestamp) {
+        return { success: false, message: 'Failed to acquire lock' };
+    }
+
+    try {
+        // Process ratings
+        const result = await processRatings(ratings);
+        return result;
+    } finally {
+        // Release lock
+        await gapi.client.sheets.spreadsheets.values.update({
+            spreadsheetId: SHEET_ID,
+            range: lockRange,
+            valueInputOption: 'RAW',
+            resource: {
+                values: [['', '']], // Clear lock and timestamp
+            },
+        });
+    }
+} catch (error) {
+    console.error('Error in submitRatingsWithLock:', error);
+    throw error;
+}
 }
 
 async function processRatings(ratings) {
-  // Get existing ratings
-  const response = await gapi.client.sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: SHEET_RANGES.RATELOG,
-  });
+// Get existing ratings
+const response = await gapi.client.sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: SHEET_RANGES.RATELOG,
+});
 
-  const existingData = response.result.values || [];
-  const updatedRatings = [];
-  const newRatings = [];
-  let isUpdated = false;
+const existingData = response.result.values || [];
+const updatedRatings = [];
+const newRatings = [];
+let isUpdated = false;
 
-  // Process each rating
-  ratings.forEach(newRating => {
-      const existingRowIndex = existingData.findIndex(row => row[0] === newRating[0]);
-      if (existingRowIndex !== -1) {
-          existingData[existingRowIndex] = newRating;
-          isUpdated = true;
-      } else {
-          newRatings.push(newRating);
-      }
-  });
+// Process each rating
+ratings.forEach(newRating => {
+    const existingRowIndex = existingData.findIndex(row => row[0] === newRating[0]);
+    if (existingRowIndex !== -1) {
+        existingData[existingRowIndex] = newRating;
+        isUpdated = true;
+    } else {
+        newRatings.push(newRating);
+    }
+});
 
-  // Batch update operations
-  const batchUpdates = [];
-  
-  if (isUpdated) {
-      batchUpdates.push(
-          gapi.client.sheets.spreadsheets.values.update({
-              spreadsheetId: SHEET_ID,
-              range: SHEET_RANGES.RATELOG,
-              valueInputOption: 'RAW',
-              resource: { values: existingData },
-          })
-      );
-  }
+// Batch update operations
+const batchUpdates = [];
 
-  if (newRatings.length > 0) {
-      batchUpdates.push(
-          gapi.client.sheets.spreadsheets.values.append({
-              spreadsheetId: SHEET_ID,
-              range: SHEET_RANGES.RATELOG,
-              valueInputOption: 'RAW',
-              resource: { values: newRatings },
-          })
-      );
-  }
+if (isUpdated) {
+    batchUpdates.push(
+        gapi.client.sheets.spreadsheets.values.update({
+            spreadsheetId: SHEET_ID,
+            range: SHEET_RANGES.RATELOG,
+            valueInputOption: 'RAW',
+            resource: { values: existingData },
+        })
+    );
+}
 
-  // Execute all updates
-  await Promise.all(batchUpdates);
+if (newRatings.length > 0) {
+    batchUpdates.push(
+        gapi.client.sheets.spreadsheets.values.append({
+            spreadsheetId: SHEET_ID,
+            range: SHEET_RANGES.RATELOG,
+            valueInputOption: 'RAW',
+            resource: { values: newRatings },
+        })
+    );
+}
 
-  return {
-      success: true,
-      message: isUpdated ? 'Ratings updated successfully' : 'Ratings submitted successfully'
-  };
+// Execute all updates
+await Promise.all(batchUpdates);
+
+return {
+    success: true,
+    message: isUpdated ? 'Ratings updated successfully' : 'Ratings submitted successfully'
+};
 }
 
 function getInitials(name) {
-    return name.split(' ').map(word => word.slice(0, 3)).join('');
+  return name.split(' ').map(word => word.slice(0, 3)).join('');
 }
 
 function getCompetencyCode(competencyName) {
-    return competencyName.split(' ').map(word => word.charAt(0).replace(/[^A-Za-z]/g, '')).join('');
+  return competencyName.split(' ').map(word => word.charAt(0).replace(/[^A-Za-z]/g, '')).join('');
 }
 
 
 
-
+//SUBMIT RATINGS END
 
 
 
