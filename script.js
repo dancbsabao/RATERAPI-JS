@@ -1,11 +1,31 @@
-// Global variables for GIS and API functionality
-let gisInitialized = false;
-let gapiInitialized = false;
-let tokenClient = null;
-let currentEvaluator = null;
+// Constants
+const CLIENT_ID = '664452848019-2vjidcmjkejj9oefokebmseod2jqbtn6.apps.googleusercontent.com';
+const API_KEY = 'AIzaSyBCRgVKU6GV-SGmn-SNBfcku4tQLBOtX_o';
+const SHEET_ID = '1ZLVppZQEq4KwLrmmxU6JLAomB_vOvlCSswkck41SXGo';
+const SCOPES = 'https://www.googleapis.com/auth/spreadsheets';
+const EVALUATOR_PASSWORDS = {
+  'Chairperson': 'chair123',
+  'Vice-Chairperson': 'vice123',
+  'In-charge, Administrative Division': 'admin123',
+  'Gender and Development': 'gen123',
+  'DENR Employees Union': 'denreu123',
+  'End-User': 'end123'
+};
 
-// Variables for config data (populated after fetching from backend)
-let CLIENT_ID, API_KEY, SHEET_ID, SCOPES, EVALUATOR_PASSWORDS, SHEET_RANGES;
+// Sheet ranges
+const SHEET_RANGES = {
+  VACANCIES: 'VACANCIES!A:C',
+  CANDIDATES: 'CANDIDATES!A:B',
+  COMPECODE: 'COMPECODE!A:B',
+  COMPETENCY: 'COMPETENCY!A:B',
+  RATELOG: 'RATELOG!A:H',
+};
+
+// Auth variables
+let tokenClient;
+let gapiInitialized = false;
+let gisInitialized = false;
+let currentEvaluator = null;
 
 // DOM elements
 const elements = {
@@ -20,217 +40,30 @@ const elements = {
   submitRatings: document.getElementById('submitRatings'),
 };
 
-// Fetch constants from the backend
-fetch('http://localhost:3000/config')
-  .then((response) => response.json())
-  .then((config) => {
-    // Extract constants from config
-    CLIENT_ID = config.CLIENT_ID;
-    API_KEY = config.API_KEY;
-    SHEET_ID = config.SHEET_ID;
-    SCOPES = config.SCOPES;
-    EVALUATOR_PASSWORDS = config.EVALUATOR_PASSWORDS;
-    SHEET_RANGES = config.SHEET_RANGES;
+// Initialize the Google API client
+function gapiLoaded() {
+  gapi.load('client', initializeGapiClient);
+}
 
-    // Log configuration for debugging
-   //console.log('Configuration loaded:', {
-      //CLIENT_ID,
-      //API_KEY,
-      //SHEET_ID,
-      //SCOPES,
-      //EVALUATOR_PASSWORDS,
-      //SHEET_RANGES,
-    //});
-
-    createEvaluatorSelector();
-
-    // Initialize the app after config is loaded
-    initializeApp();
-  })
-  .catch((error) => {
-    console.error('Failed to load configuration:', error);
+async function initializeGapiClient() {
+  await gapi.client.init({
+    apiKey: API_KEY,
+    discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4'],
   });
-
-// Define GIS loading logic globally
-function gisLoaded() {
-  console.log(`GIS loaded with CLIENT_ID: "fuck you"`);
-  const gisConfig = {
-    client_id: CLIENT_ID,
-    scope: SCOPES,
-    callback: handleTokenCallback, // Provide a callback function
-  };
-  console.log('GIS Config:', "fuck you again");
-
-  gisInitialized = true;
+  gapiInitialized = true;
   maybeEnableButtons();
 }
 
-// Initialize app only after config is loaded
-function initializeApp() {
-    // Call GIS loading logic
-    gisLoaded();
-
-  // Initialize the Google API client
-  gapi.load('client', initializeGapiClient);
-
-  // Initialize Token Client after the config is loaded
-  initializeTokenClient();
-}
-
-gapi.load('client', async () => {
-  await gapi.client.init({
-      apiKey: API_KEY, // Replace with your API Key
-      discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4'],
+// Initialize the Google Identity Services (GIS) client
+function gisLoaded() {
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: SCOPES,
+    callback: '', // Will set during sign-in
   });
-  gapiInitialized = true;
-  maybeEnableButtons(); // Enable buttons if GIS is also initialized
-});
-
-function initializeTokenClient() {
-    if (!CLIENT_ID || !SCOPES) {
-        console.error('CLIENT_ID or SCOPES are not defined');
-        return;
-    }
-
-    tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: CLIENT_ID,
-        scope: SCOPES,
-        callback: handleTokenCallback, // Provide a callback function
-        prompt: 'select_account'
-    });
-
-    console.log('Token Client Initialized');
+  gisInitialized = true;
+  maybeEnableButtons();
 }
-
-function handleTokenCallback(tokenResponse) {
-  if (tokenResponse.error) {
-    console.error('Token error:', tokenResponse.error);
-  } else {
-    console.log('Token received:', tokenResponse);
-    // You can store the token and use it for further API requests
-    // For example, store the access token
-    const accessToken = tokenResponse.access_token;
-    gapi.client.setApiKey(accessToken); // Set API Key with the token
-  }
-}
-
-function maybeEnableButtons() {
-  // Enable buttons if both GIS and GAPI are initialized
-  if (gisInitialized && gapiInitialized) {
-    elements.signInBtn.style.display = 'inline-block';
-    elements.signOutBtn.style.display = 'inline-block';
-  }
-}
-
-function createEvaluatorSelector() {
-
-  if (!EVALUATOR_PASSWORDS || Object.keys(EVALUATOR_PASSWORDS).length === 0) {
-    return;
-   }
-
-  const formGroup = document.createElement('div');
-  formGroup.className = 'form-group';
-
-  const label = document.createElement('label');
-  label.htmlFor = 'evaluatorSelect';
-  label.textContent = 'Evaluator:';
-
-  const select = document.createElement('select');
-  select.id = 'evaluatorSelect';
-  select.required = true;
-
-  const defaultOption = document.createElement('option');
-  defaultOption.value = '';
-  defaultOption.textContent = 'Select Evaluator';
-  select.appendChild(defaultOption);
-
-  Object.keys(EVALUATOR_PASSWORDS).forEach((evaluator) => {
-    const option = document.createElement('option');
-    option.value = evaluator;
-    option.textContent = evaluator;
-    select.appendChild(option);
-  });
-
-  select.addEventListener('change', handleEvaluatorSelection);
-
-  formGroup.appendChild(label);
-  formGroup.appendChild(select);
-
-  const ratingForm = document.querySelector('.rating-form');
-  if (ratingForm) {
-    ratingForm.insertBefore(formGroup, ratingForm.firstChild);
-  } else {
-    console.error('Error: .rating-form element not found in the DOM.');
-  }
-}
-
-// Handle evaluator selection
-async function handleEvaluatorSelection(event) {
-  const selectElement = event.target;
-  const newSelection = selectElement.value;
-
-  // Immediately revert the select element to the current evaluator (if any)
-  selectElement.value = currentEvaluator || '';
-
-  // If no evaluator is selected, reset and exit
-  if (!newSelection) {
-    currentEvaluator = null;
-    console.log('No evaluator selected. Resetting dropdowns.');
-    resetDropdowns(vacancies);
-    return;
-  }
-
-  const modalContent = `
-      <p>Please enter the password for ${newSelection}:</p>
-      <input type="password" id="evaluatorPassword" class="modal-input" 
-             style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-top: 10px;">
-  `;
-
-  // Show modal for password input
-  showModal('Evaluator Authentication', modalContent, () => {
-    const passwordInput = document.getElementById('evaluatorPassword');
-    const password = passwordInput.value.trim();
-
-    if (password === EVALUATOR_PASSWORDS[newSelection]) {
-      // Only update the select element and currentEvaluator after successful authentication
-      selectElement.value = newSelection;
-      currentEvaluator = newSelection;
-      console.log(`Logged in successfully as ${newSelection}`);
-      showToast('success', 'Success', `Logged in as ${newSelection}`);
-
-      // Reset dropdowns and fetch data for the new evaluator
-      console.log('Resetting dropdowns for the new evaluator.');
-      resetDropdowns(vacancies);
-      fetchSubmittedRatings();
-    } else {
-      console.error('Incorrect password.');
-      showToast('error', 'Error', 'Incorrect password');
-      // Select element is already set to the previous value
-    }
-  });
-}
-
-// Initialize evaluator dropdown on page load
-document.addEventListener('DOMContentLoaded', () => {
-  createEvaluatorSelector();  // Ensure the dropdown is created when the DOM is ready
-});
-
-// Initialize the Google API client
-async function initializeGapiClient() {
-  try {
-    await gapi.client.init({
-      apiKey: API_KEY,
-      discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4'],
-    });
-    gapiInitialized = true;
-    console.log('GAPI client initialized');
-    maybeEnableButtons();
-  } catch (error) {
-    console.error('Error initializing GAPI client:', error);
-  }
-}
-
-//CORRECTED
 
 // Enable sign-in/out buttons if both GAPI and GIS are initialized
 function maybeEnableButtons() {
@@ -240,54 +73,44 @@ function maybeEnableButtons() {
   }
 }
 
-// Handle authentication (sign-in)
+// Handle authentication
 function handleAuthClick() {
   tokenClient.callback = async (resp) => {
-      if (resp.error) {
-          elements.authStatus.textContent = 'Error during sign-in';
-          return console.error('Auth error:', resp.error);
-      }
-      elements.authStatus.textContent = 'Signed in';
-      elements.signInBtn.style.display = 'none';
-      elements.signOutBtn.style.display = 'block';
-      await loadSheetData();
+    if (resp.error) {
+      elements.authStatus.textContent = 'Error during sign-in';
+      return console.error('Auth error:', resp.error);
+    }
+    elements.authStatus.textContent = 'Signed in';
+    elements.signInBtn.style.display = 'none';
+    elements.signOutBtn.style.display = 'block';
+    await loadSheetData();
   };
   tokenClient.requestAccessToken({ prompt: 'consent' });
 }
 
-// Handle sign-out
 function handleSignOutClick() {
   const token = gapi.client.getToken();
   if (token) {
     google.accounts.oauth2.revoke(token.access_token, () => {
       gapi.client.setToken(null);
-
-      // Update UI upon successful sign-out
       elements.authStatus.textContent = 'Signed out';
       elements.signInBtn.style.display = 'block';
       elements.signOutBtn.style.display = 'none';
-
-      // Clear global data if necessary
-      vacancies = [];
-      candidates = [];
-      compeCodes = [];
-      competencies = [];
     });
   }
 }
 
-// Global variables for Google Sheets data
+// Load data from Google Sheets
+// Declare global variables
 let vacancies = [];
 let candidates = [];
 let compeCodes = [];
 let competencies = [];
 
-// Load data from Google Sheets
+// Function to load data from Google Sheets
 async function loadSheetData() {
   try {
     const ranges = Object.values(SHEET_RANGES);
-
-    // Fetch all data ranges in parallel
     const data = await Promise.all(
       ranges.map((range) =>
         gapi.client.sheets.spreadsheets.values.get({
@@ -297,28 +120,23 @@ async function loadSheetData() {
       )
     );
 
-    // Assign fetched data to global variables
+    // Assign data to global variables
     vacancies = data[0]?.result?.values || [];
     candidates = data[1]?.result?.values || [];
     compeCodes = data[2]?.result?.values || [];
     competencies = data[3]?.result?.values || [];
 
-    console.log('Sheet data loaded:', { vacancies, candidates, compeCodes, competencies });
-
-    // Initialize dropdowns with the loaded data
+    // Initialize dropdowns with loaded data
     initializeDropdowns(vacancies, candidates, compeCodes, competencies);
   } catch (error) {
-    console.error('Error loading sheet data:', error);
+    console.error('Error loading data:', error);
     elements.authStatus.textContent = 'Error loading sheet data';
   }
 }
 
-// Generic function to update dropdowns
+// Generic dropdown update function
 function updateDropdown(dropdown, options, defaultOptionText = 'Select') {
-  // Clear existing options and add default option
   dropdown.innerHTML = `<option value="">${defaultOptionText}</option>`;
-
-  // Populate dropdown with new options
   options.forEach((opt) => {
     const option = document.createElement('option');
     option.value = opt;
@@ -327,41 +145,16 @@ function updateDropdown(dropdown, options, defaultOptionText = 'Select') {
   });
 }
 
-// Initialize dropdowns with loaded data
-function initializeDropdowns(vacancies, candidates, compeCodes, competencies) {
-  if (elements.assignmentDropdown) {
-    updateDropdown(
-      elements.assignmentDropdown,
-      vacancies.map((v) => v[0]), // Assuming the first column has vacancy titles
-      'Select Vacancy'
-    );
-  }
 
-  if (elements.nameDropdown) {
-    updateDropdown(
-      elements.nameDropdown,
-      candidates.map((c) => c[0]), // Assuming the first column has candidate names
-      'Select Candidate'
-    );
-  }
 
-  if (elements.itemDropdown) {
-    updateDropdown(
-      elements.itemDropdown,
-      compeCodes.map((cc) => cc[0]), // Assuming the first column has item codes
-      'Select Item'
-    );
-  }
 
-  if (elements.competencyContainer) {
-    updateDropdown(
-      elements.competencyContainer,
-      competencies.map((comp) => comp[0]), // Assuming the first column has competency names
-      'Select Competency'
-    );
-  }
-}
-//CORRECTED
+
+
+
+
+
+
+
 function initializeDropdowns(vacancies, candidates, compeCodes, competencies) {
   // Helper function to disable/enable dropdown
   function setDropdownState(dropdown, enabled) {
@@ -456,6 +249,12 @@ function initializeDropdowns(vacancies, candidates, compeCodes, competencies) {
       }
   });
 }
+
+
+
+
+
+
 
 // Display Competencies
 async function fetchCompetenciesFromSheet() {
@@ -564,6 +363,19 @@ async function fetchCompetenciesFromSheet() {
       });
     });
 
+
+
+
+
+
+
+
+
+
+
+
+
+  
     // Enable the submit button once all ratings are selected
     function checkAllRatingsSelected() {
       const allRated = Array.from(elements.competencyContainer.getElementsByClassName('competency-item'))
@@ -586,6 +398,13 @@ async function fetchCompetenciesFromSheet() {
     // Initial check to enable/disable the submit button
     checkAllRatingsSelected();
   }
+  
+
+
+
+
+
+  
   
   let fetchTimeout;
 
@@ -701,6 +520,126 @@ async function fetchCompetenciesFromSheet() {
   elements.itemDropdown.addEventListener('change', fetchSubmittedRatings);
   
 
+
+
+
+
+
+
+
+
+
+
+
+
+// Add this function to create and append evaluator selector
+document.addEventListener('DOMContentLoaded', () => {
+  function createEvaluatorSelector() {
+      const formGroup = document.createElement('div');
+      formGroup.className = 'form-group';
+      
+      const label = document.createElement('label');
+      label.htmlFor = 'evaluatorSelect';
+      label.textContent = 'Evaluator:';
+      
+      const select = document.createElement('select');
+      select.id = 'evaluatorSelect';
+      select.required = true;
+      
+      const defaultOption = document.createElement('option');
+      defaultOption.value = '';
+      defaultOption.textContent = 'Select Evaluator';
+      select.appendChild(defaultOption);
+      
+      Object.keys(EVALUATOR_PASSWORDS).forEach(evaluator => {
+          const option = document.createElement('option');
+          option.value = evaluator;
+          option.textContent = evaluator;
+          select.appendChild(option);
+      });
+      
+      select.addEventListener('change', handleEvaluatorSelection);
+      
+      formGroup.appendChild(label);
+      formGroup.appendChild(select);
+      
+      // Insert at the beginning of the rating form
+      const ratingForm = document.querySelector('.rating-form');
+      if (ratingForm) {
+          ratingForm.insertBefore(formGroup, ratingForm.firstChild);
+      } else {
+          console.error('Error: .rating-form element not found in the DOM.');
+      }
+  }
+
+  // Call the function after DOM is fully loaded
+  createEvaluatorSelector();
+});
+
+
+
+
+
+
+
+
+
+
+async function handleEvaluatorSelection(event) {
+  const selectElement = event.target;
+  const newSelection = selectElement.value;
+  
+  // Immediately revert the select element to current evaluator
+  selectElement.value = currentEvaluator || '';
+  
+  // If no evaluator is selected, reset and exit
+  if (!newSelection) {
+      currentEvaluator = null;
+      console.log('No evaluator selected. Resetting dropdowns.');
+      resetDropdowns(vacancies);
+      return;
+  }
+
+  const modalContent = `
+      <p>Please enter the password for ${newSelection}:</p>
+      <input type="password" id="evaluatorPassword" class="modal-input" 
+             style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-top: 10px;">
+  `;
+
+  showModal('Evaluator Authentication', modalContent, () => {
+      const passwordInput = document.getElementById('evaluatorPassword');
+      const password = passwordInput.value.trim();
+
+      if (password === EVALUATOR_PASSWORDS[newSelection]) {
+          // Only update the select element and currentEvaluator after successful authentication
+          selectElement.value = newSelection;
+          currentEvaluator = newSelection;
+          console.log(`Logged in successfully as ${newSelection}`);
+          showToast('success', 'Success', `Logged in as ${newSelection}`);
+
+          // Reset dropdowns
+          console.log('Resetting dropdowns for the new evaluator.');
+          resetDropdowns(vacancies);
+          fetchSubmittedRatings();
+      } else {
+          console.error('Incorrect password.');
+          showToast('error', 'Error', 'Incorrect password');
+          // Select element is already set to the previous value
+      }
+  });
+}
+
+
+
+
+
+
+
+
+
+
+
+
 // Function to reset all dropdowns to their default state
 function resetDropdowns(vacancies) {
   console.log('Fetching unique assignments to reset the dropdowns.');
@@ -741,7 +680,27 @@ function updateDropdown(dropdown, options, defaultOptionText = 'Select') {
   console.log(`Dropdown ${dropdown.id} updated with options:`, options);
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 //SUBMIT RATINGS START
+
+
 
 // Modify your existing submitRatings function to include evaluator check
 async function submitRatings() {
@@ -1166,7 +1125,20 @@ function getCompetencyCode(competencyName) {
   return competencyName.split(' ').map(word => word.charAt(0).replace(/[^A-Za-z]/g, '')).join('');
 }
 
+
+
 //SUBMIT RATINGS END
+
+
+
+
+
+
+
+
+
+
+
 
 // Add this to your existing handleAuthClick callback
 function onSignInSuccess() {
@@ -1183,5 +1155,5 @@ elements.signInBtn.addEventListener('click', handleAuthClick);
 elements.signOutBtn.addEventListener('click', handleSignOutClick);
 
 // Load APIs
-gapi.load();
+gapiLoaded();
 gisLoaded();
